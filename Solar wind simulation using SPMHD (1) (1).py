@@ -4,16 +4,16 @@ import math
 
 ti.init(arch=ti.gpu)
 
+
 mu_0 = 4 * np.pi * 1e-7
 sigma_kernel = 10.0 / (7.0 * np.pi)
 gamma = 5.0 / 3.0
 
 dimension = 2
 num_particles_max = 100000
-dt = 7e-6
+dt = 7e-5
 
-
-hex_spacing = 0.05
+hex_spacing = 0.02
 
 
 magnetic_diffusivity = 5e-4 
@@ -25,11 +25,11 @@ domain_center = ti.Vector([0.0, 0.0])
 
 
 gravitational_constant = 5e-3
-center_mass = 10000
+center_mass = 0
 
 
 magnet_center = ti.Vector([0.0, 0.0])
-initial_magnet_moment_strength = 0.000045
+initial_magnet_moment_strength = 2000.0
 magnet_moment_strength = initial_magnet_moment_strength
 magnet_moment_direction = ti.Vector([-1.0, 0.0])
 
@@ -38,39 +38,40 @@ magnetic_field_scale = 0.5
 num_grid_points = 50
 
 
-base_B_magnitude = 0.005
+base_B_magnitude = 0.05
 
 
 B_magnitude_threshold = 5e-8
 
 
-max_pressure_cap = 1000.0
+max_pressure_cap = 100000000000000000000000.0
 
 
-max_density_cap = 5.0 * 1e6
+max_density_cap = 5.0 * 1e10
 density_cap_activation_distance = 0.2
 
 
-max_velocity_cap = 50000000.0
+max_velocity_cap = 1000000000000000000.0
 
 
 
-num_ions = 3000
-num_electron_core = 3000
-num_electron_halo = 3000
+num_ions = 5000
+num_electron_core = 5000
+num_electron_halo = 5000
 num_special_particles = num_ions + num_electron_core + num_electron_halo
 
 
-special_particle_spawn_x_min = domain_min + 0.1 - 3.0
-special_particle_spawn_x_max = domain_min + 0.5 - 3.0
+special_particle_spawn_x_min = domain_min + 0.1 - 2.0
+special_particle_spawn_x_max = domain_min + 0.5 - 2.0
 special_particle_spawn_y_min = domain_min
 special_particle_spawn_y_max = domain_max
 
 
-ion_initial_velocity = ti.Vector([1000000.0, 0.0])
-electron_core_initial_velocity = ti.Vector([1000000.0, 0.0])
-electron_halo_initial_velocity_low = ti.Vector([800000.0, 0.0])
-electron_halo_initial_velocity_high = ti.Vector([7000000.0, 0.0])
+
+ion_initial_velocity = ti.Vector([0.004, 0.0])
+electron_core_initial_velocity = ti.Vector([0.004, 0.0])
+electron_halo_initial_velocity_low = ti.Vector([0.002, 0.0])
+electron_halo_initial_velocity_high = ti.Vector([0.01, 0.0])
 
 
 ion_initial_B_magnitude = 5e-9
@@ -153,11 +154,11 @@ electron_charge = -1.602176634e-19
 
 
 
-effective_electron_charge_per_particle = electron_charge * 1e15
+effective_electron_charge_per_particle = electron_charge * 1e25
 
 
 
-biot_savart_scale_factor = 5e-14
+biot_savart_scale_factor = 6.4e6
 
 
 @ti.func
@@ -406,8 +407,8 @@ def init_particles_kernel(initial_mag_strength: ti.f32, start_row: ti.i32, end_r
                 num_actual_particles[None] -= 1
 
 
-    hex_rows_max = 205
-    row_height = hex_spacing * ti.sqrt(3.0) / 2.0
+    hex_rows_max = 1000
+    row_height = hex_spacing * ti.sqrt(4.0)
 
     y_base_for_hex_grid = magnet_center.y
 
@@ -458,12 +459,12 @@ def init_particles_kernel(initial_mag_strength: ti.f32, start_row: ti.i32, end_r
 
                         is_special_particle_type[idx] = PARTICLE_TYPE_NORMAL
                         alpha_visc_p[idx], beta_visc_p[idx] = 0.1, 0.1
-                        vel[idx] = B_initial_direction * 1000.0
+                        vel[idx] = B_initial_direction * 0.001
 
                         pos[idx] = p_pos_candidate
                         mass[idx] = 1.0 / num_particles_max
                         u[idx] = 1.0
-                        rho[idx] = 0.00000000000000000001
+                        rho[idx] = 0.001
                         acc[idx] = ti.Vector([0.0, 0.0])
                         P_pressure[idx] = (gamma - 1.0) * rho[idx] * u[idx]
                         h_smooth[idx] = 0.04
@@ -482,15 +483,11 @@ def init_particles_kernel(initial_mag_strength: ti.f32, start_row: ti.i32, end_r
                 
 
 
-
 @ti.kernel
-def compute_sph_properties():
-    """모든 입자의 밀도, 압력, 가속도 (압력, 점성, 자기장)를 계산합니다."""
+def compute_density_only():
+    """루프 1: 모든 입자의 밀도만 계산합니다."""
     for i in range(num_actual_particles[None]):
         rho[i] = 0.0
-        acc[i] = ti.Vector([0.0, 0.0])
-        etha_a_dt_field[i] = 0.0
-        dB_dt[i] = ti.Vector([0.0, 0.0])
 
     for i in range(num_actual_particles[None]):
 
@@ -519,6 +516,15 @@ def compute_sph_properties():
                     else:
                         rho[i] += density_contribution
 
+@ti.kernel
+def compute_forces_and_magnetic_effects():
+    """루프 2: 압력, 점성, 자기항, dBdt 등 힘 관련 계산과 특수입자 효과를 통합 처리합니다."""
+    for i in range(num_actual_particles[None]):
+        acc[i] = ti.Vector([0.0, 0.0])
+        etha_a_dt_field[i] = 0.0
+        dB_dt[i] = ti.Vector([0.0, 0.0])
+
+    for i in range(num_actual_particles[None]):
 
         if rho[i] > 1e-9:
             P_pressure[i] = (gamma - 1.0) * rho[i] * u[i]
@@ -533,6 +539,33 @@ def compute_sph_properties():
                                     (B[i].outer_product(B[i]) - 0.5 * B_i_norm_sq * ti.Matrix.identity(ti.f32, dimension)) / mu_0
 
         acc_pressure_i, acc_visc_i, acc_magnetic_i = ti.Vector([0.0, 0.0]), ti.Vector([0.0, 0.0]), ti.Vector([0.0, 0.0])
+
+
+        if is_special_particle_type[i] == PARTICLE_TYPE_NORMAL:
+            total_B = ti.Vector([0.0, 0.0])
+            for j in range(num_actual_particles[None]):
+                if is_special_particle_type[j] != PARTICLE_TYPE_NORMAL:
+                    r_vec = pos[i] - pos[j]
+                    r = r_vec.norm()
+                    if r > 1e-6:
+                        current_j = effective_electron_charge_per_particle * vel[j]
+
+                        dB = biot_savart_scale_factor * ti.Vector([-current_j.y, current_j.x]) / (r * r)
+                        total_B += dB
+            B[i] += total_B
+
+
+        if is_special_particle_type[i] == PARTICLE_TYPE_NORMAL:
+            total_B = ti.Vector([0.0, 0.0])
+            for j in range(num_actual_particles[None]):
+                if is_special_particle_type[j] != PARTICLE_TYPE_NORMAL:
+                    r_vec = pos[i] - pos[j]
+                    r = r_vec.norm()
+                    if r > 1e-6:
+                        current_j = effective_electron_charge_per_particle * vel[j]
+                        dB = biot_savart_scale_factor * ti.Vector([-current_j.y, current_j.x]) / (r * r)
+                        total_B += dB
+            B[i] += total_B
 
 
         for j in range(num_actual_particles[None]):
@@ -695,7 +728,7 @@ def update_particles(dt: ti.f32, current_initial_placement_min_radius: ti.f32):
 
                 if is_position_valid(candidate_pos, i, num_actual_particles[None], min_particle_distance_sq, magnetic_free_zone_radius, current_initial_placement_min_radius):
                     pos[i] = candidate_pos
-                    vel[i] = ti.Vector([ti.random(ti.f32) * 2 - 1, ti.random(ti.f32) * 2 - 1]) * 5.0
+                    vel[i] = ti.Vector([ti.random(ti.f32) * 2 - 1, ti.random(ti.f32) * 2 - 1]) * 0.005
                     u[i] = 1.0
                     rho[i] = 1.0
                     B[i] = get_dipole_B_field(pos[i], magnet_center, magnet_moment_direction, magnet_moment_strength)
@@ -770,7 +803,7 @@ def repopulate_particles_kernel(initial_mag_strength: ti.f32, current_initial_pl
 
                             is_special_particle_type[idx] = PARTICLE_TYPE_NORMAL
                             alpha_visc_p[idx], beta_visc_p[idx] = 0.5, 0.5
-                            vel[idx] = B_initial_direction * 1000.0
+                            vel[idx] = B_initial_direction * 0.001
                             pos[idx] = candidate_pos
                             mass[idx] = 1.0 / num_particles_max
                             u[idx] = 1.0
@@ -1053,8 +1086,8 @@ def main_simulation_loop():
         for e in window.get_events(ti.ui.PRESS):
             if e.key == ti.ui.ESCAPE:
                 window.running = False
-
-        compute_sph_properties()
+        compute_density_only()
+        compute_forces_and_magnetic_effects()
         update_particles(dt, initial_placement_min_radius)
         visualize_magnetic_field_grid_kernel(magnet_moment_strength)
         compute_static_dipole_field_kernel(magnet_moment_strength)
@@ -1128,12 +1161,12 @@ def main_simulation_loop():
         if len(electron_core_particles_pos) > 0:
             temp_electron_core_circles_field = ti.Vector.field(dimension, dtype=ti.f32, shape=len(electron_core_particles_pos))
             temp_electron_core_circles_field.from_numpy(np.array(electron_core_particles_pos, dtype=np.float32))
-            canvas.circles(temp_electron_core_circles_field, radius=0.05 / display_range, color=(0.0, 0.0, 1.0))
+            canvas.circles(temp_electron_core_circles_field, radius=0.05 / display_range, color=(1.0, 0.0, 0.0))
 
         if len(electron_halo_particles_pos) > 0:
             temp_electron_halo_circles_field = ti.Vector.field(dimension, dtype=ti.f32, shape=len(electron_halo_particles_pos))
             temp_electron_halo_circles_field.from_numpy(np.array(electron_halo_particles_pos, dtype=np.float32))
-            canvas.circles(temp_electron_halo_circles_field, radius=0.05 / display_range, color=(0.0, 1.0, 1.0))
+            canvas.circles(temp_electron_halo_circles_field, radius=0.05 / display_range, color=(1.0, 0.0, 0.0))
 
 
         grid_pos_np = grid_pos.to_numpy()
@@ -1189,7 +1222,39 @@ def main_simulation_loop():
         if particle_arrow_segment_count > 0:
             temp_particle_magnetic_arrows_field = ti.Vector.field(dimension, dtype=ti.f32, shape=particle_arrow_segment_count * 2)
             temp_particle_magnetic_arrows_field.from_numpy(particle_magnetic_arrow_vertices[:particle_arrow_segment_count * 2])
-            canvas.lines(temp_particle_magnetic_arrows_field, color=(0.6, 0.6, 1.0), width=0.001)
+
+            for type_id, color in [
+                (PARTICLE_TYPE_ION, (1.0, 0.2, 0.2)),
+                (PARTICLE_TYPE_ELECTRON_CORE, (1.0, 0.2, 0.2)),
+                (PARTICLE_TYPE_ELECTRON_HALO, (1.0, 0.2, 0.2)),
+                (PARTICLE_TYPE_NORMAL, (0.6, 0.6, 1.0)),
+            ]:
+                particle_arrow_vertices = []
+                for i in range(num_actual_particles[None]):
+                    if is_particle_type_np[i] == type_id and np.linalg.norm(B_unit_field_np[i]) > B_magnitude_threshold:
+                        p_start_disp = display_pos_np[i]
+                        scale_factor = magnetic_field_scale * 0.5 / display_range
+                        direction_vec_disp = B_unit_field_np[i] * scale_factor
+                        p_end_disp = p_start_disp + direction_vec_disp
+                        line_norm = np.linalg.norm(direction_vec_disp)
+                        if line_norm > 1e-9:
+                            particle_arrow_vertices.append(p_start_disp)
+                            particle_arrow_vertices.append(p_end_disp)
+
+                            v_back = -direction_vec_disp / line_norm
+                            current_arrowhead_len = 0.004 / display_range
+                            for angle_rad in [np.pi / 6, -np.pi / 6]:
+                                arrow_dir = rotate_vector(v_back, angle_rad)
+                                arrow_p = p_end_disp + arrow_dir * current_arrowhead_len
+                                particle_arrow_vertices.append(arrow_p)
+                                particle_arrow_vertices.append(p_end_disp)
+
+                if len(particle_arrow_vertices) > 0:
+                    arr = np.array(particle_arrow_vertices, dtype=np.float32)
+                    field = ti.Vector.field(dimension, dtype=ti.f32, shape=arr.shape[0])
+                    field.from_numpy(arr)
+                    canvas.lines(field, color=color, width=0.001)
+
 
 
         grid_B_interpolated_np = grid_B_interpolated.to_numpy()
@@ -1276,7 +1341,7 @@ def main_simulation_loop():
             temp_grid_dipole_arrows_field = ti.Vector.field(dimension, dtype=ti.f32, shape=grid_dipole_arrow_segment_count * 2)
             temp_grid_dipole_arrows_field.from_numpy(grid_dipole_arrow_vertices[:grid_dipole_arrow_segment_count * 2])
             canvas.lines(temp_grid_dipole_arrows_field, color=(0.0, 0.8, 0.0), width=0.001)
-
+        
         window.show()
 
 if __name__ == "__main__":
